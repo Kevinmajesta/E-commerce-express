@@ -1,11 +1,8 @@
-// Import express-validator
+// src/controllers/RegisterController.js
 const { validationResult } = require("express-validator");
-
-// Import bcrypt
 const bcrypt = require("bcryptjs");
-
-// Import Model User Mongoose
-const User = require("../models/user.js"); // Adjust path if needed
+const User = require("../models/user.js");
+const fs = require('fs'); // Import fs module for file deletion
 
 // Import response formatter functions
 const {
@@ -13,96 +10,105 @@ const {
   badRequest,
   conflict,
   internalServerError
-} = require("../utils/response/responseFormatter"); // Adjust path if needed
+} = require("../utils/response/responseFormatter");
 
-const fs = require('fs'); // Import fs module for file deletion
+// Import email service
+const { sendWelcomeEmail } = require("../utils/email/emailService"); // <--- Import email service
 
+// Import custom error classes and handler
+const {
+  ValidationError,
+  ConflictError,
+  handleMongooseError // Ini sangat penting untuk menormalisasi error DB
+} = require("../utils/errorHandler/errorHandler");
+
+// Ambil default avatar
+const { DEFAULT_AVATAR } = require('../config/constants'); // Pastikan ini diimpor jika digunakan
 
 // Function register
 const register = async (req, res) => {
-  // Periksa hasil validasi dari express-validator
   const errors = validationResult(req);
 
   // Ambil data dari req.body
-  let { username, name, email, password, phone_number, address } = req.body; // <-- address juga diambil
+  let { username, name, email, password, phone_number, address } = req.body;
 
-  // --- Tambahan Penting: Parsing Address ---
-  // Jika 'address' ada dan berupa string, coba parse menjadi objek
+  // --- Parsing Address ---
+  // Pastikan Anda memanggil fileHandler.deleteFile jika gagal parse JSON
   if (address && typeof address === 'string') {
     try {
       address = JSON.parse(address);
     } catch (e) {
-      // Jika gagal parse JSON, anggap itu sebagai error validasi
-      const customErrors = [{ param: 'address', msg: 'Address must be a valid JSON string.' }];
-      if (req.file) { // Hapus file jika ada error validasi di sini
-        fs.unlink(req.file.path, (err) => {
-          if (err) console.error("Error deleting uploaded file:", err);
-        });
+      if (req.file) { // Hapus file jika gagal parse JSON
+        // Gunakan fileHandler.deleteFile
+        fileHandler.deleteFile(req.file.path, "Error deleting uploaded file on invalid address JSON:");
       }
-      return badRequest(res, "Validation error", customErrors);
+      return badRequest(res, "Validation error", [{ param: 'address', msg: 'Address must be a valid JSON string.' }]);
     }
   }
-  // --- Akhir Tambahan Parsing Address ---
+  // --- Akhir Parsing Address ---
 
 
   if (!errors.isEmpty()) {
-    // Jika ada error validasi, dan ada file yang diupload, hapus file tersebut
+    // Jika ada error validasi dari express-validator, hapus file yang diupload
     if (req.file) {
-      fs.unlink(req.file.path, (err) => {
-        if (err) console.error("Error deleting uploaded file:", err);
-      });
+      // Gunakan fileHandler.deleteFile
+      fileHandler.deleteFile(req.file.path, "Error deleting uploaded file on validation error:");
     }
     return badRequest(res, "Validation error", errors.array());
   }
 
-
-  // Ambil nama file dari req.file jika ada
-  const profile_picture = req.file ? req.file.filename : 'default-avatar.png'; // Gunakan nama file dari Multer
-
+  // Ambil nama file dari req.file jika ada, gunakan DEFAULT_AVATAR jika tidak
+  const profile_picture = req.file ? req.file.filename : DEFAULT_AVATAR;
 
   try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-
+    // Password akan di-hash oleh middleware pre('save') di model User,
+    // jadi di sini kita hanya meneruskan 'password' mentah.
     const user = await User.create({
       username: username.toLowerCase(),
       name: name,
       email: email.toLowerCase(),
-      password: hashedPassword,
+      password: password, // <-- Model akan menghash ini
       phone_number: phone_number,
-      address: address, // <-- Kini 'address' seharusnya sudah berupa objek
+      address: address,
       profile_picture: profile_picture,
       // role akan menggunakan default 'user' jika tidak disediakan
     });
 
     const userResponse = user.toObject();
-    delete userResponse.password;
+    delete userResponse.password; // Hapus password sebelum mengembalikan respons
+
+    // --- Kirim Email Selamat Datang ---
+    // Panggil fungsi pengiriman email. Jangan menunggu hasilnya jika ingin respons cepat.
+    sendWelcomeEmail(user.email, user.name)
+      .catch(err => console.error(`Failed to send welcome email to ${user.email}:`, err));
+    // --- Akhir Kirim Email ---
 
     return created(res, "Register successfully", userResponse);
 
   } catch (error) {
-    // Jika terjadi error database, hapus file yang mungkin sudah terupload
+    // Jika terjadi error database (misal: duplikat username/email), hapus file yang mungkin sudah terupload
     if (req.file) {
-      fs.unlink(req.file.path, (err) => {
-        if (err) console.error("Error deleting uploaded file on DB error:", err);
-      });
+      // Gunakan fileHandler.deleteFile
+      fileHandler.deleteFile(req.file.path, "Error deleting uploaded file on DB error:");
     }
 
     console.error("Error during user registration:", error);
 
-    if (error.name === 'ValidationError') {
-      const validationErrors = Object.values(error.errors).map(err => ({
-        param: err.path,
-        msg: err.message
-      }));
-      return badRequest(res, error.message, validationErrors);
+    // Gunakan handleMongooseError untuk menormalisasi error database
+    const handledError = handleMongooseError(error);
+
+    if (handledError.name === 'ValidationError') {
+      return badRequest(res, handledError.message, handledError.details);
+    }
+    if (handledError.name === 'ConflictError') {
+      return conflict(res, handledError.message, handledError.details);
+    }
+    // Jika ada error Multer yang tidak tertangkap middleware sebelumnya (jarang terjadi di sini)
+    if (error.message && error.message.includes('Hanya file gambar')) { // Ini dari fileFilter Multer
+        return badRequest(res, error.message);
     }
 
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyValue)[0];
-      const message = `${field.charAt(0).toUpperCase() + field.slice(1)} already exists.`;
-      return conflict(res, message, [{ param: field, msg: message }]);
-    }
-
+    // Untuk error yang tidak terduga lainnya
     return internalServerError(res, "Internal server error.");
   }
 };

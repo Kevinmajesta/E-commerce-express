@@ -19,27 +19,23 @@ const { DEFAULT_PRODUCT_IMAGE } = require("../config/constants"); // Asumsikan A
  * @throws {ConflictError} Jika ada konflik data (misalnya, nama produk duplikat jika unik).
  */
 const createProduct = async (productData, files) => {
-  // Parameter kedua sekarang adalah 'files' (objek)
   let { name, description, price, discount_price, stock, category, brand } =
     productData;
-  let images = []; // Array untuk menyimpan semua nama file gambar
+  let images = [];
 
-  // Ambil nama file dari Multer untuk 'product_image'
   if (files && files.product_image && files.product_image.length > 0) {
     images.push(files.product_image[0].filename);
   }
 
-  // Ambil nama file dari Multer untuk 'images' (array)
   if (files && files.images && files.images.length > 0) {
     files.images.forEach((f) => images.push(f.filename));
   }
 
-  // Handle images array from productData if sent as JSON string (untuk URL yang sudah ada)
   if (productData.images && typeof productData.images === "string") {
     try {
       const parsedImages = JSON.parse(productData.images);
       if (Array.isArray(parsedImages)) {
-        images = [...images, ...parsedImages]; // Gabungkan dengan gambar yang diupload via file
+        images = [...images, ...parsedImages];
       } else {
         throw new ValidationError(
           "Images field must be a valid JSON array string.",
@@ -52,7 +48,6 @@ const createProduct = async (productData, files) => {
         );
       }
     } catch (e) {
-      // Bersihkan SEMUA file yang diupload jika parsing JSON string gagal
       if (files.product_image)
         files.product_image.forEach((f) => fileHandler.deleteFile(f.path));
       if (files.images)
@@ -63,14 +58,11 @@ const createProduct = async (productData, files) => {
       );
     }
   } else if (Array.isArray(productData.images)) {
-    // Jika images langsung dikirim sebagai array (misal dari JSON body)
     images = [...images, ...productData.images];
   }
 
-  // Filter out any empty strings/nulls and ensure uniqueness
   const uniqueImages = [...new Set(images.filter((img) => img))];
 
-  // Jika setelah semua proses tidak ada gambar, gunakan gambar default
   if (uniqueImages.length === 0) {
     uniqueImages.push(DEFAULT_PRODUCT_IMAGE);
   }
@@ -88,9 +80,12 @@ const createProduct = async (productData, files) => {
 
   try {
     const savedProduct = await newProduct.save();
+    await cacheService.deleteCache("products:{}"); // For no filter, no sort
+    await cacheService.deleteCache(`products:{}:{"createdAt":-1}`); // For no filter, default sort
+    await cacheService.deleteCache(`products:{}:{"createdAt":1}`);
+    await cacheService.deleteCacheByPattern("products:*");
     return savedProduct.toObject({ getters: true, virtuals: false });
   } catch (error) {
-    // Bersihkan SEMUA file yang diunggah jika terjadi error database
     if (files.product_image)
       files.product_image.forEach((f) => fileHandler.deleteFile(f.path));
     if (files.images)
@@ -99,27 +94,50 @@ const createProduct = async (productData, files) => {
   }
 };
 
-const getAllProducts = async (search) => {
+const getAllProducts = async (queryParams = {}) => {
+  const { search, category, minPrice, maxPrice, sortBy, order } = queryParams;
   let queryFilter = {};
+  let sortOptions = {};
 
+  // 1. Build Search/Filter Query
   if (search) {
     const searchRegex = new RegExp(search, "i");
-    queryFilter = {
-      $or: [{ name: { $regex: searchRegex } }],
-    };
+    queryFilter.$or = [
+      { name: { $regex: searchRegex } },
+      { description: { $regex: searchRegex } },
+      { brand: { $regex: searchRegex } },
+    ];
+  }
+  if (category) {
+    queryFilter.category = category;
+  }
+  if (minPrice || maxPrice) {
+    queryFilter.price = {};
+    if (minPrice) queryFilter.price.$gte = Number(minPrice);
+    if (maxPrice) queryFilter.price.$lte = Number(maxPrice);
   }
 
-  const cacheKey = `products:${JSON.stringify(queryFilter)}`;
+  // 2. Build Sort Options
+  if (sortBy) {
+    const sortOrder = order === "asc" ? 1 : -1; // 'asc' for ascending, 'desc' for descending
+    sortOptions[sortBy] = sortOrder;
+  } else {
+    // Default sort if none provided
+    sortOptions.createdAt = -1; // Sort by creation date, newest first
+  }
+
+  const cacheKey = `products:${JSON.stringify(queryFilter)}:${JSON.stringify(
+    sortOptions
+  )}`;
   const cachedProducts = await cacheService.getCache(cacheKey);
   if (cachedProducts) {
     return JSON.parse(cachedProducts);
   }
 
   const products = await Product.find(queryFilter)
-    .select("-password -__v")
-    .sort({ createdAt: -1 });
+    .select("-__v") // Exclude __v from results
+    .sort(sortOptions); // Apply sorting
 
-  // Konversi Mongoose document ke plain object sebelum caching
   const productsToCache = products.map((product) =>
     product.toObject({ getters: true, virtuals: false })
   );

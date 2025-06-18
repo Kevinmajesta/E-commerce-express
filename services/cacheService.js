@@ -27,7 +27,11 @@ const getCache = async (key) => {
  * @param {number} [expiresInSeconds=CACHE_EXPIRATION_SECONDS] - Waktu kadaluarsa dalam detik.
  * @returns {Promise<void>}
  */
-const setCache = async (key, value, expiresInSeconds = CACHE_EXPIRATION_SECONDS) => {
+const setCache = async (
+  key,
+  value,
+  expiresInSeconds = CACHE_EXPIRATION_SECONDS
+) => {
   try {
     await redisClient.setEx(key, expiresInSeconds, value);
     console.log(`Data cached in Redis for key: ${key}`);
@@ -57,9 +61,35 @@ const deleteCache = async (...keys) => {
  * @param {string} userId - ID pengguna yang cachenya akan diinvalidasi.
  */
 const invalidateUserCache = async (userId) => {
-  await deleteCache(`user:${userId}`, "users:{}"); // Invalidate cache specific user & all users
-  // Jika ada cache dengan filter lain (misal: users:{"role":"admin"}), Anda mungkin perlu strategi yang lebih canggih
-  // seperti tag atau prefix untuk invalidasi massal yang lebih cerdas.
+  try {
+    await redisClient.del(`user:${userId}`);
+    console.log(`Cleared cache for user ID: ${userId}`);
+    await redisClient.del("users:{}");
+    console.log('Invalidated "all users" cache.');
+  } catch (cacheError) {
+    console.error("Redis cache invalidation error:", cacheError);
+  }
+};
+
+const deleteCacheByPattern = async (pattern) => {
+  try {
+    // Use redisClient.keys() to find all matching keys
+    const keys = await redisClient.keys(pattern);
+    if (keys.length > 0) {
+      // Use redisClient.del() with an array of keys for efficient deletion
+      await redisClient.del(keys);
+      console.log(
+        `Cleared ${keys.length} cache keys matching pattern: ${pattern}`
+      );
+    } else {
+      console.log(`No cache keys found matching pattern: ${pattern}`);
+    }
+  } catch (cacheError) {
+    console.error(
+      `Redis cache deletion by pattern error for pattern ${pattern}:`,
+      cacheError
+    );
+  }
 };
 
 module.exports = {
@@ -67,4 +97,5 @@ module.exports = {
   setCache,
   deleteCache,
   invalidateUserCache,
+  deleteCacheByPattern,
 };

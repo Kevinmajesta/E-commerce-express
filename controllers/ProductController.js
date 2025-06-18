@@ -65,13 +65,13 @@ const createProductController = async (req, res) => {
   }
 };
 
-const findProducts = async (req, res) => {
+const findProducts = async (req, res) => { // This function should now handle filter/sort
   try {
-    const { search } = req.query;
-    const products = await productService.getAllProducts(search);
-    return ok(res, "Get all producs successfully", products);
+    // Pass req.query directly to the service
+    const products = await productService.getAllProducts(req.query);
+    return ok(res, "Get all products successfully", products);
   } catch (error) {
-    console.error("Error in findProducs:", error);
+    console.error("Error in findProducts:", error); // Corrected typo from "findProducs"
     return internalServerError(res, "Internal server error.");
   }
 };

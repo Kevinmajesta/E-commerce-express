@@ -1,43 +1,83 @@
-// routes/index.js (or whatever your main router file is named, e.g., authRoutes.js)
-
-// Import express
 const express = require("express");
 
 const verifyToken = require("../middlewares/auth");
-// Init express router
+
 const router = express.Router();
 
-// Import register and login controllers
-const registerController = require("../controllers/RegisterController"); // Or wherever your register controller is
+const registerController = require("../controllers/RegisterController");
 const loginController = require("../controllers/LoginController");
 const userController = require("../controllers/UserController");
+const productController = require("../controllers/ProductController");
 
-// Import validation middleware
-const { validateRegister, validateLogin } = require("../utils/validators/auth"); // Assuming both are in auth.js
+const { validateRegister, validateLogin } = require("../utils/validators/auth");
+const { validateProduct } = require("../utils/validators/product");
+const { validateUser } = require("../utils/validators/user");
 
-// Import Multer upload middleware
-const upload = require("../middlewares/upload"); // <--- Make sure this path is correct
+const { configureMulter } = require("../middlewares/upload");
+const { handleValidationErrors } = require("../middlewares/validationMiddleware");
 
-// Define route for register
-// Add upload.single() middleware BEFORE validation
+const uploadAvatar = configureMulter("avatars", 5);
+const uploadProductImages = configureMulter("products", 10);
+
 router.post(
   "/register",
-  upload.single("profile_picture"),
+  uploadAvatar.single("profile_picture"),
   validateRegister,
+  handleValidationErrors,
   registerController.register
 );
 
-// Define route for login
-router.post("/login", validateLogin, loginController.login);
+router.post("/login", validateLogin, handleValidationErrors, loginController.login);
+
 router.get("/admin/users", verifyToken, userController.findUsers);
+
 router.get("/admin/users/:id", verifyToken, userController.findUserById);
+
 router.put(
   "/admin/users/:id",
   verifyToken,
-  upload.single("profile_picture"), // 2. Multer parses form-data and populates req.body
-  userController.updateUser // 4. Controller receives parsed body and validated data
+  uploadAvatar.single("profile_picture"),
+  validateUser,
+  handleValidationErrors,
+  userController.updateUser
 );
+
 router.delete("/admin/users/:id", verifyToken, userController.deleteUser);
 
-// Export router
+router.post(
+  "/admin/products",
+  verifyToken,
+  uploadProductImages.fields([
+    { name: "product_image", maxCount: 1 },
+    { name: "images", maxCount: 5 },
+  ]),
+  validateProduct,
+  handleValidationErrors,
+  productController.createProductController
+);
+
+router.get(
+  "/admin/products",
+  verifyToken,
+  productController.findProducts
+);
+router.get(
+  "/admin/products/:id",
+  verifyToken,
+  productController.findProductById
+);
+
+router.put(
+  "/admin/products/:id",
+  verifyToken,
+  uploadProductImages.fields([
+    { name: "product_image", maxCount: 1 },
+    { name: "images", maxCount: 5 },
+  ]),
+  validateProduct,
+  handleValidationErrors,
+  productController.updateProduct
+);
+
+router.delete("/admin/products/:id", verifyToken, productController.deleteProduct);
 module.exports = router;

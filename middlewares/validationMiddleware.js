@@ -1,7 +1,7 @@
 // src/middlewares/validationMiddleware.js
 const { validationResult } = require("express-validator");
 const { badRequest } = require("../utils/response/responseFormatter");
-const fileHandler = require("../utils/fileHandler");
+const fileHandler = require("../utils/fileHandler/fileHandler");
 
 /**
  * Middleware untuk menangani hasil validasi dari express-validator.
